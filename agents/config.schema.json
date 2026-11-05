@@ -623,6 +623,84 @@
         }
       }
     },
+    "code": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "在飞书里直接改本机代码。默认关。打开后，写入白名单成员发「改代码 …」或「/code …」，机器人在 workspace 指向的 git 仓库跑一次可写的模型，改完回总结和 diff，可用「/撤销」退回。",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "workspace": {
+          "type": "string",
+          "description": "要改的本机 git 仓库路径。可以写绝对路径，或相对 base_dir 的路径。"
+        },
+        "allowed_users": {
+          "type": "object",
+          "description": "覆盖 write.allowed_users。不写或留空时沿用 write.allowed_users。"
+        },
+        "engines": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["cursor", "codex"]
+          },
+          "description": "按顺序尝试。前一个没有结果时换下一个。不写是 cursor。"
+        },
+        "model": {
+          "type": "string",
+          "description": "Cursor 的模型名。不写时沿用 agent.model。"
+        },
+        "max_runtime_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "一次改代码最长多久。不写是 1200。"
+        },
+        "stall_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "多少秒没有新输出就当成卡住。不写是 300。"
+        },
+        "max_task_chars": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "任务描述最多保留多少字。不写是 4000。"
+        },
+        "max_chars": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "总结最多保留多少字。不写是 2200。"
+        },
+        "diff_max_lines": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "回复里最多贴多少行 diff。不写是 120。"
+        },
+        "undo_ttl_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "「/撤销」在多长时间内有效。不写是 7200。"
+        },
+        "cursor_cooldown_sec": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Cursor 额度用完后，多久不再尝试它。不写是 21600。"
+        },
+        "codex_sandbox": {
+          "type": "string",
+          "enum": ["read-only", "workspace-write", "danger-full-access"],
+          "description": "Codex 的沙箱。不写是 workspace-write。"
+        },
+        "codex_model": {
+          "type": "string"
+        },
+        "git_timeout_sec": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "单条 git 命令最多等几秒。不写是 120。"
+        }
+      }
+    },
     "confirm": {
       "type": "object",
       "additionalProperties": true,

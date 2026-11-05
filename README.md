@@ -58,6 +58,7 @@ flowchart LR
 - 常驻模式默认关着。`agent.mode` 写成 `acp` 后，Cursor 只启动一次。见 [docs/常驻模式.md](docs/常驻模式.md)。
 - 模型可以换成你自己的账号：`model_provider` 写成 `openai_compat`，密钥放在环境变量。见 [docs/模型接口.md](docs/模型接口.md)。拿去参赛时的字段对照见 [docs/用本框架参赛.md](docs/用本框架参赛.md)。
 - 也可以写 `model.provider` 换成 OpenAI 兼容接口或 Claude；不写时仍是 Cursor，行为与以前一样。见 [docs/换模型.md](docs/换模型.md)。
+- 在飞书里改代码默认关着。打开后，写入白名单成员发「改代码 …」或「/code …」，机器人会在配置指定的本机 git 仓库跑一次可写的模型，回总结和 diff；同一人回「/撤销」可退回这一轮的改动。Cursor 额度用完时可以接着用本机的 Codex。见 [agents/CONFIG.md](agents/CONFIG.md)。
 
 ## 功能开关表
 

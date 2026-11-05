@@ -544,8 +544,46 @@ python checks/check_config.py agents/example.json
 
 `docs_tokens`：要从飞书拉进知识库的文档编号列表。空列表表示不拉。同步只进待审区，你确认后才替换正式知识库。见 `docs/新建智能体.md` 最后一节。
 
+## 在飞书里改代码 code
+
+默认关。不写 `code`，或 `enabled` 为 `false` 时，「改代码」「/code」「代码：」这些字仍当普通问题交给模型。
+
+打开后，`write.allowed_users` 里的人（或这里单独写的 `allowed_users`）发一条以「改代码」开头的消息，机器人就在 `workspace` 指向的 git 仓库里跑一次可写的模型。改完回一段中文总结、改动的文件和行数、以及截断后的 diff。要退回这次改动，同一发起人在有效期内回「/撤销」。
+
+| 键 | 默认 | 填什么 |
+|---|---|---|
+| `enabled` | `false` | `true` 才响应「改代码」和「/撤销」。 |
+| `workspace` | 空 | 要改的本机 git 仓库路径。绝对路径，或相对 `base_dir` 的路径。必须能跑 `git`。 |
+| `allowed_users` | 空 | 覆盖 `write.allowed_users` 的 open_id 名单。不写或空对象时沿用写入白名单。 |
+| `engines` | `["cursor"]` | 按顺序尝试。可以写 `["cursor","codex"]`：Cursor 额度用完或没有返回时改用本机的 Codex。 |
+| `model` | 空 | Cursor 的模型名。不写时沿用 `agent.model`。 |
+| `max_runtime_sec` | `1200` | 一次改代码最长多久。到点先把已有改动报回来。 |
+| `stall_sec` | `300` | 多少秒完全没有新输出就当成卡住。 |
+| `max_task_chars` | `4000` | 任务描述最多保留多少字，多出的截掉。 |
+| `max_chars` | `2200` | 回复里的总结最多多少字。 |
+| `diff_max_lines` | `120` | 回复里最多贴多少行 diff。 |
+| `undo_ttl_sec` | `7200` | 「/撤销」在多长时间内有效，过期只能手动用 git 回退。 |
+| `cursor_cooldown_sec` | `21600` | Cursor 报额度用完或未登录后，多久不再尝试它。 |
+| `codex_sandbox` | `workspace-write` | Codex 的沙箱。只允许它改工作区时用默认值，不要随手改成 `danger-full-access`。 |
+| `codex_model` | 空 | Codex 的模型名。不写时用 Codex 自己的默认值。 |
+| `git_timeout_sec` | `120` | 单条 git 命令最多等几秒。 |
+
+改代码前后各做一次 git 快照：`stash create` 只生成一个提交对象，不动工作区，也不会出现在 `git stash list` 里。所以仓库里本来就有的未提交改动不会被当成这一轮的改动，撤销时也不会被碰。
+
+安全边界：
+
+- 只有白名单能发。别人发「改代码」只会收到「只对写入白名单开放」；撤销也只有发起那次改动的人能做。
+- 模型被要求在动手前读仓库根目录的 `COLLAB.md`，不动标注「独占」「禁改」的文件和区域。
+- 模型被告知不要 checkout / reset / clean / stash，不要 commit、push、建分支或标签。如果它还是提交了，机器人会提示自动撤销不可用。
+- 只删除这一轮新建、且不在 git 里的文件；删除前会检查路径，不接受绝对路径或 `..`。
+- 仓库在那次改动之后多了提交时，撤销会拒绝执行。
+- 演练（`--dry-run`）里默认不真的改文件，也不真的撤销；只有环境变量 `AGENTBOT_DRY_LIVE_WRITES=1` 时才动手，和飞书写入一致。
+- 打开后 `--check` 会多一行 `code workspace`，检查那个目录里有没有 `.git`。
+
+Codex 不是必装项。找不到 `codex` 命令时，`engines` 里写了它也只会在结果里说明原因，不影响 Cursor。密钥和登录仍由本机各自的命令行管理，配置里不写账号。
+
 ## 演练开关
 
 `dry_run_live_reads`：演练时要不要真的去读飞书。默认 `false`，演练只在屏幕上打印命令，不发消息。不要为了省事改成 `true`，除非你知道自己在演练、并且只读。
 
-写操作在演练里默认也不真的执行。只有你本人在环境变量里打开 `AGENTBOT_DRY_LIVE_WRITES=1` 时才会真的写。验收时才这么做，并且用单独的测试表。
+写操作在演练里默认也不真的执行。只有你本人在环境变量里打开 `AGENTBOT_DRY_LIVE_WRITES=1` 时才会真的写。验收时才这么做，并且用单独的测试表。「改代码」和「/撤销」同理，演练里默认不碰仓库。
