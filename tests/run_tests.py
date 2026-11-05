@@ -3,6 +3,7 @@ import datetime, hashlib, json, os, re, subprocess, sys, tempfile, sqlite3, shut
 FW = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, FW)
 import utf8io  # noqa: F401  管道改为 UTF-8，不依赖 PYTHONUTF8 / PYTHONIOENCODING
+import codemode as _codemode
 T = tempfile.mkdtemp(prefix="agentbot_t_"); os.makedirs(os.path.join(T, "kb"))
 # 配置模板：AGENTBOT_TEST_CFG 指定；否则用 agents/example.json（占位符配置，测试会改写到临时目录）
 _cp = os.environ.get("AGENTBOT_TEST_CFG") or os.path.join(FW, "agents", "example.json")
@@ -3460,6 +3461,73 @@ _graw = open(os.path.join(_exp_dir, "facts.jsonl"), encoding="utf-8").read()
 check("群里送达的提案只能由审批人在本群确认",
       "没有写入" in _gp2p and "没有写入" in _gother and _gok.startswith("已记") and "GRPYES" in _graw,
       "\n".join([_gp2p, _gother, _gok]))
+
+_git_exe = shutil.which("git") or "git"
+def _mk_repo(name, dirty=False):
+    d = os.path.join(T, name); os.makedirs(d)
+    def g(*a):
+        return subprocess.run([_git_exe, "-C", d] + list(a), capture_output=True, text=True, encoding="utf-8", errors="replace")
+    g("init", "-q"); g("config", "user.name", "test"); g("config", "user.email", "test@example.com")
+    open(os.path.join(d, "a.txt"), "w", encoding="utf-8").write("first\n")
+    g("add", "a.txt"); g("commit", "-q", "-m", "init")
+    if dirty:
+        open(os.path.join(d, "a.txt"), "w", encoding="utf-8").write("first\nuncommitted before run\n")
+        open(os.path.join(d, "keep_me.txt"), "w", encoding="utf-8").write("pre-existing untracked\n")
+    return d, g
+
+_fake_code = os.path.join(FW, "tests", "fake_code_agent.py")
+_code_env = {"AGENTBOT_AGENT_CMD": json.dumps([sys.executable, _fake_code]),
+             "AGENTBOT_CODEX_CMD": json.dumps([sys.executable, _fake_code]),
+             "AGENTBOT_DRY_LIVE_WRITES": "1"}
+def _ccfg(name, ws, **code):
+    c = json.loads(json.dumps(cfg))
+    c["write"]["allowed_users"]["user_other"] = "同事"
+    c["code"] = dict({"enabled": True, "workspace": ws, "engines": ["cursor"], "max_runtime_sec": 30, "stall_sec": 10}, **code)
+    pth = os.path.join(T, name + ".json"); json.dump(c, open(pth, "w", encoding="utf-8"), ensure_ascii=False); return pth
+
+_repo0, _g0 = _mk_repo("codeoff")
+o = run([ev("code0", "改代码 把 a.txt 改一下", sender_id="user_admin")], name="code_off",
+        cfg_path=pcfg("code_off_cfg", code={"enabled": False, "workspace": _repo0}))
+check("改代码默认关：这句话仍当普通问题交给模型", "agent start code0" in o and "【改动】" not in o, o)
+_repo1, _g1 = _mk_repo("coderepo1", dirty=True)
+_cc = _ccfg("code_run_cfg", _repo1)
+o = run([ev("code1", "改代码 把 a.txt 改一下", sender_id="user_sender")], name="code_deny", cfg_path=_cc, extra_env=_code_env)
+check("改代码：不在写入白名单的人被拒", "只对写入白名单开放" in o and "agent start code1" not in o, o)
+o = run([ev("code2", "改代码 把 a.txt 改一下", sender_id="user_admin")], name="code_run", cfg_path=_cc, extra_env=_code_env)
+_a1 = open(os.path.join(_repo1, "a.txt"), encoding="utf-8").read()
+check("改代码：白名单跑一次，回总结和 diff，文件真的改了",
+      "改完了" in o and "改好了" in o and "【改动】" in o and "【diff】" in o
+      and "line from agent" in _a1 and os.path.isfile(os.path.join(_repo1, "new_by_agent.txt")), o[-1500:])
+o = run([ev("code3", "/撤销", sender_id="user_other")], name="code_undo_other", cfg_path=_cc, extra_env=_code_env)
+check("撤销：不是发起人不能退", "只有发起那次改动的人可以撤销" in o and os.path.isfile(os.path.join(_repo1, "new_by_agent.txt")), o)
+o = run([ev("code4", "/撤销", sender_id="user_admin")], name="code_undo", cfg_path=_cc, extra_env=_code_env)
+_a1 = open(os.path.join(_repo1, "a.txt"), encoding="utf-8").read()
+check("撤销：只退这一轮改过的文件，改之前就有的未提交改动没被碰",
+      "已退回" in o and _a1 == "first\nuncommitted before run\n"
+      and not os.path.exists(os.path.join(_repo1, "new_by_agent.txt"))
+      and os.path.isfile(os.path.join(_repo1, "keep_me.txt")), o + "\n" + _a1)
+o = run([ev("code5", "改代码", sender_id="user_admin")], name="code_empty", cfg_path=_cc, extra_env=_code_env)
+check("改代码：后面没写任务时给出用法，不启动模型", "在「改代码」后面写要改什么" in o and "agent start code5" not in o, o)
+_repo2, _g2 = _mk_repo("coderepo2")
+_cc2 = _ccfg("code_fb_cfg", _repo2, engines=["cursor", "codex"])
+o = run([ev("code6", "改代码 [[QUOTA]] 把 a.txt 改一下", sender_id="user_admin")], name="code_fallback", cfg_path=_cc2, extra_env=_code_env)
+check("改代码：Cursor 没额度时改用它后面的引擎", "codex" in o and "改好了" in o and os.path.isfile(os.path.join(_repo2, "new_by_agent.txt")), o[-1500:])
+_repo3, _g3 = _mk_repo("coderepo3")
+_cc3 = _ccfg("code_head_cfg", _repo3)
+run([ev("code7", "改代码 把 a.txt 改一下", sender_id="user_admin")], name="code_head_run", cfg_path=_cc3, extra_env=_code_env)
+open(os.path.join(_repo3, "b.txt"), "w", encoding="utf-8").write("later\n")
+_g3("add", "b.txt"); _g3("commit", "-q", "-m", "later")
+o = run([ev("code8", "/撤销", sender_id="user_admin")], name="code_head_undo", cfg_path=_cc3, extra_env=_code_env)
+check("撤销：仓库多了提交时拒绝自动退回", "多了提交" in o and os.path.isfile(os.path.join(_repo3, "new_by_agent.txt")), o)
+_repo4, _g4 = _mk_repo("coderepo4")
+o = run([ev("code9", "改代码 把 a.txt 改一下", sender_id="user_admin")], name="code_rehearse",
+        cfg_path=_ccfg("code_rehearse_cfg", _repo4),
+        extra_env={"AGENTBOT_AGENT_CMD": json.dumps([sys.executable, _fake_code]), "AGENTBOT_DRY_LIVE_WRITES": None})
+check("演练模式默认不真的改代码",
+      "演练模式不真的改代码" in o and open(os.path.join(_repo4, "a.txt"), encoding="utf-8").read() == "first\n"
+      and not os.path.exists(os.path.join(_repo4, "new_by_agent.txt")), o)
+check("撤销路径检查：绝对路径和 .. 一律不接受",
+      not _codemode.CodeMode._safe("../../x") and not _codemode.CodeMode._safe("C:/x") and _codemode.CodeMode._safe("dir/a.txt"))
 
 print("\n%d/%d passed" % (sum(r for _, r in results), len(results))); shutil.rmtree(T, ignore_errors=True)
 sys.exit(0 if all(r for _, r in results) else 1)

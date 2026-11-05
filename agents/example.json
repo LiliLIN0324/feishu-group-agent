@@ -261,6 +261,13 @@
       "状态"
     ]
   },
+  "code": {
+    "enabled": false,
+    "workspace": "REPLACE_WORKSPACE_PATH",
+    "engines": [
+      "cursor"
+    ]
+  },
   "progress": {
     "enabled": false,
     "mode": "card",

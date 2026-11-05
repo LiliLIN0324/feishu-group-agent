@@ -15,7 +15,7 @@ import json, os, re, subprocess, sys, time, logging, collections, threading, sql
 
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 import utf8io  # 管道上的标准流改为 UTF-8，避免中文 Windows 的代码页把日志解崩
-import acp_client, calltrace, channels, crew, digest, feishu_link, guard, health_alert, knowledge, lifecycle, memory, memory_growth, observe, proc_identity, providers, retrospect, skill_evolve, usage
+import acp_client, calltrace, channels, codemode, crew, digest, feishu_link, guard, health_alert, knowledge, lifecycle, memory, memory_growth, observe, proc_identity, providers, retrospect, skill_evolve, usage
 import confirm_mode, feature_switch
 from channels.base import Cap, can_update, status_modes
 from channels.feishu import MEMBER_ADDED, MEMBER_DELETED
@@ -52,6 +52,7 @@ _h = RotatingFileHandler = __import__("logging.handlers", fromlist=["RotatingFil
 _fh = _h(os.path.join(LOGD, "bot.log"), maxBytes=2_000_000, backupCount=5, encoding="utf-8")
 _fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s")); log.addHandler(_fh)
 log.addHandler(logging.StreamHandler(sys.stdout))
+CODEMODE = codemode.CodeMode(CFG, BASE, STATE, log, dry=DRY)  # 默认关；只在配置 code.enabled 时响应「改代码」
 
 # ---------- 单实例锁 + 冲突检查 ----------
 LOCK = os.path.join(STATE, "bot.lock")
@@ -1783,6 +1784,7 @@ def _direct_command(q):
     if skill_evolve.looks_like(q): return True
     if q in ("/help", "帮助") or (len(q) <= 30 and HELP_RX.search(q)): return True
     if usage.enabled(CFG) and q == "/report": return True
+    if CODEMODE.match(q) is not None or CODEMODE.is_undo(q): return True
     return False
 def handle(ev):
     mid = ev.get("message_id") or ev.get("id")
@@ -1913,6 +1915,13 @@ def _handle_claimed(ev, mid, ctype, uid):
     if hit and hit.get("action", "refuse") == "refuse":
         reply(mid, hit.get("reply") or CFG["texts"].get("policy_refuse") or CFG["texts"].get("taboo") or "这个话题我不参与讨论。")
         _usage_turn(ev.get("chat_id"), ctype, False, q_topic, q_hits); return
+    code_task = CODEMODE.match(q)
+    if CODEMODE.is_undo(q):
+        if not CODEMODE.allowed(uid): reply(mid, "撤销只对写入白名单开放。"); return
+        reply(mid, CODEMODE.undo(uid)); return
+    if code_task is not None:
+        if not CODEMODE.allowed(uid): reply(mid, "改代码只对写入白名单开放。"); return
+        if not code_task: reply(mid, "在「改代码」后面写要改什么。"); return
     ok, why = rate_ok(uid)
     if not ok:
         if why == "hour": reply(mid, CFG["texts"]["busy"])
@@ -1952,7 +1961,7 @@ def _handle_claimed(ev, mid, ctype, uid):
         except Exception: log.warning("call trace begin failed")
         err_kind = ""
         try:
-            if targets and FEAT.get("attachments"):
+            if targets and FEAT.get("attachments") and code_task is None:
                 try: extra, cleanup = _load_context(targets, ctx, mid)
                 except ToolError as e:
                     log.info("attachment degraded: %s %s", e.user_msg, guard.redact(e.detail[:200], REDACT_NAMES))
@@ -1971,8 +1980,8 @@ def _handle_claimed(ev, mid, ctype, uid):
                     prog.set_stage(stage)
                     try: lifecycle.touch(STATE, mid, stage, REDACT_NAMES)
                     except Exception: pass
-            q_model = clip_question(q)
-            a = answer(q_model, sess, ctx, extra, on_stage=hook)
+            q_model = q if code_task is not None else clip_question(q)
+            a = CODEMODE.run(code_task, ctx, on_stage=hook) if code_task is not None else answer(q_model, sess, ctx, extra, on_stage=hook)
         except Exception as e:
             log.error("handle error: %s: %s", type(e).__name__, guard.redact(str(e), REDACT_NAMES)[:300]); a = None
             low = str(e).lower()
@@ -1987,7 +1996,7 @@ def _handle_claimed(ev, mid, ctype, uid):
     if partial:
         if a: a = str(a) + "\n\n" + CFG["texts"].get("partial_note", "（时间到了，先给部分结果）")
         else: a = CFG["texts"].get("stall", "这题比较复杂，没在时间内答完，可以拆成更小的问题再问我。")
-    elif a: remember(sess, "user", guard.neutralize(guard.redact(q_model, REDACT_NAMES))); remember(sess, "bot", guard.neutralize(a if isinstance(a, str) else str(a)))
+    elif a and code_task is None: remember(sess, "user", guard.neutralize(guard.redact(q_model, REDACT_NAMES))); remember(sess, "bot", guard.neutralize(a if isinstance(a, str) else str(a)))
     final = _with_late(a or CFG["texts"]["fail"])
     log.info("metric kind=answer chat=%s limited=%d in_chars=%d out_chars=%d elapsed=%.1fs ok=%d partial=%d",
              "p2p" if ctype == "p2p" else "group", 1 if ctx.get("limited") else 0,
@@ -2350,6 +2359,11 @@ def self_check():
     p("lark-cli", shutil.which(lark_exe()[0]) or os.path.exists(lark_exe()[0]), lark_exe()[0])
     p("redact names", True, "%d 个（%s）" % (len(REDACT_NAMES), CFG.get("redact_file", "redact.txt")))
     w = CFG.get("write", {}); p("write whitelist", True, "users=%s" % list((w.get("allowed_users") or {}).values()))
+    code_cfg = CFG.get("code") if isinstance(CFG.get("code"), dict) else {}
+    if code_cfg.get("enabled"):
+        p("code workspace", os.path.isdir(os.path.join(CODEMODE.workspace, ".git")), CODEMODE.workspace)
+        if not (code_cfg.get("allowed_users") or (w.get("allowed_users") or {})):
+            print("HINT code.enabled 已打开，但 write.allowed_users 为空，没有人能发「改代码」。")
     known = static_chat_ids() or [r["chat_id"] for r in all_chats() if r["status"] == "admitted"]
     p("group memory", True, "enabled=%s budget=%d profiles=%s" % (GMEM.enabled, GMEM.budget, [c for c in known if GMEM.path(c) and os.path.isfile(GMEM.path(c))]))
     p("chats", True, describe_chats())
